@@ -2,6 +2,8 @@
 
 An Azure sample for a browser-based AI call center. The app streams microphone audio from a SPA to an ASP.NET Core API, transcribes it with Azure AI Speech, searches expected responses in Azure HorizonDB with vector embeddings, reranks candidates with Azure OpenAI, and plays the selected response with Speech TTS.
 
+![HorizonDB AI Call Center screenshot](images/screenshot.webp)
+
 ## What is included
 
 - ASP.NET Core API hosted on Azure Container Apps
