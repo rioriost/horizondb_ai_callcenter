@@ -1,6 +1,7 @@
 # Azure Developer CLI
 .azure/
 *.azdstate
+infra/main.json
 
 # Local secrets and environment
 .env
@@ -67,4 +68,3 @@ audio-output/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
-
