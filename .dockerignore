@@ -1,0 +1,9 @@
+**/.git
+**/.azure
+**/bin
+**/obj
+**/TestResults
+**/.DS_Store
+docs
+recordings
+audio-output
