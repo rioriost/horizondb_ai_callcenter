@@ -31,3 +31,4 @@
 - LocalAdapter project を削除し、Container Apps 配信 SPA と `/ws/audio/conversations/{id}` を追加した。
 - ブラウザは `getUserMedia()` で取得した音声を 16 kHz PCM chunk として API に送り、API が managed identity で Azure Speech STT に接続する構成に変更した。
 - API managed identity に `Cognitive Services Speech User` role を付与する Bicep を追加した。
+- Speech SDK の C# `SpeechRecognizer` は Entra ID 認証で custom endpoint + `TokenCredential` を使う必要があるため、raw bearer token 方式から `SpeechConfig.FromEndpoint(..., TokenCredential)` に変更した。

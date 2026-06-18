@@ -150,6 +150,16 @@ resource apiSpeechUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+resource apiCognitiveServicesUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(speech.id, apiIdentity.id, 'cognitive-services-user')
+  scope: speech
+  properties: {
+    principalType: 'ServicePrincipal'
+    principalId: apiIdentity.properties.principalId
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a97b65f3-24c7-4388-baec-2e87135dc908')
+  }
+}
+
 resource containerEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: containerEnvironmentName
   location: location
@@ -422,6 +432,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
   dependsOn: [
     apiKeyVaultSecretsUser
     apiSpeechUser
+    apiCognitiveServicesUser
     acrPull
   ]
 }
@@ -444,5 +455,6 @@ output AZURE_OPENAI_EMBED_MODEL string = embeddingModelName
 output AZURE_OPENAI_CHAT_DEPLOYMENT string = chatDeploymentName
 output AZURE_OPENAI_CHAT_MODEL string = chatModelName
 output SPEECH_REGION string = location
+output SPEECH_ENDPOINT string = speechEndpoint
 output SERVICE_API_NAME string = apiApp.name
 output SERVICE_API_URI string = 'https://${apiApp.properties.configuration.ingress.fqdn}'

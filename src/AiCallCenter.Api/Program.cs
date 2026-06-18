@@ -14,7 +14,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(AppDatabaseOptions.FromConfiguration(builder.Configuration));
 builder.Services.AddSingleton<AiModelOptions>(_ => AiModelOptions.FromConfiguration(builder.Configuration));
 builder.Services.AddSingleton<SpeechTranscriptionOptions>(_ => SpeechTranscriptionOptions.FromConfiguration(builder.Configuration));
-builder.Services.AddSingleton<AzureSpeechTokenProvider>();
+builder.Services.AddSingleton<AzureSpeechCredentialProvider>(_ => AzureSpeechCredentialProvider.FromConfiguration(builder.Configuration));
 builder.Services.AddHttpClient<AzureOpenAiClient>();
 builder.Services.AddSingleton<ConversationRepository>();
 builder.Services.AddSingleton<ConversationService>();
@@ -114,7 +114,7 @@ app.Map("/ws/audio/conversations/{conversationId:guid}", async (
     HttpContext context,
     ConversationService service,
     SpeechTranscriptionOptions speechOptions,
-    AzureSpeechTokenProvider speechTokenProvider,
+    AzureSpeechCredentialProvider speechCredentialProvider,
     CancellationToken cancellationToken) =>
 {
     if (!context.WebSockets.IsWebSocketRequest)
@@ -127,7 +127,7 @@ app.Map("/ws/audio/conversations/{conversationId:guid}", async (
     speechOptions.EnsureConfigured();
 
     using var socket = await context.WebSockets.AcceptWebSocketAsync();
-    await RunAudioTranscriptionSessionAsync(socket, conversationId, service, speechOptions, speechTokenProvider, cancellationToken);
+    await RunAudioTranscriptionSessionAsync(socket, conversationId, service, speechOptions, speechCredentialProvider, cancellationToken);
 });
 
 app.Run();
@@ -171,7 +171,7 @@ static async Task RunAudioTranscriptionSessionAsync(
     Guid conversationId,
     ConversationService service,
     SpeechTranscriptionOptions speechOptions,
-    AzureSpeechTokenProvider speechTokenProvider,
+    AzureSpeechCredentialProvider speechCredentialProvider,
     CancellationToken cancellationToken)
 {
     var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
@@ -213,8 +213,7 @@ static async Task RunAudioTranscriptionSessionAsync(
             return;
         }
 
-        var token = await speechTokenProvider.GetAccessTokenAsync(cancellationToken);
-        var speechConfig = SpeechConfig.FromAuthorizationToken(token.Token, speechOptions.Region);
+        var speechConfig = SpeechConfig.FromEndpoint(speechOptions.Endpoint, speechCredentialProvider.Credential);
         speechConfig.SpeechRecognitionLanguage = speechOptions.Language;
 
         var audioFormat = AudioStreamFormat.GetWaveFormatPCM((uint)sampleRate, 16, 1);
@@ -737,25 +736,26 @@ sealed record AiModelOptions(Uri Endpoint, string ApiVersion, string EmbeddingDe
     }
 }
 
-sealed class AzureSpeechTokenProvider
+sealed class AzureSpeechCredentialProvider(TokenCredential credential)
 {
-    readonly TokenCredential credential = new DefaultAzureCredential();
+    public TokenCredential Credential { get; } = credential;
 
-    public async Task<AccessToken> GetAccessTokenAsync(CancellationToken cancellationToken)
+    public static AzureSpeechCredentialProvider FromConfiguration(IConfiguration configuration)
     {
-        return await credential.GetTokenAsync(
-            new TokenRequestContext(["https://cognitiveservices.azure.com/.default"]),
-            cancellationToken);
+        var clientId = configuration["AZURE_CLIENT_ID"];
+        return new AzureSpeechCredentialProvider(string.IsNullOrWhiteSpace(clientId)
+            ? new DefaultAzureCredential()
+            : new ManagedIdentityCredential(clientId));
     }
 }
 
-sealed record SpeechTranscriptionOptions(string? Region, string Language, int SampleRate)
+sealed record SpeechTranscriptionOptions(Uri? Endpoint, string Language, int SampleRate)
 {
     public void EnsureConfigured()
     {
-        if (string.IsNullOrWhiteSpace(Region))
+        if (Endpoint is null)
         {
-            throw new InvalidOperationException("SPEECH_REGION is required for browser audio transcription.");
+            throw new InvalidOperationException("SPEECH_ENDPOINT is required for browser audio transcription.");
         }
     }
 
@@ -766,7 +766,7 @@ sealed record SpeechTranscriptionOptions(string? Region, string Language, int Sa
             : 16000;
 
         return new SpeechTranscriptionOptions(
-            configuration["SPEECH_REGION"],
+            Uri.TryCreate(configuration["SPEECH_ENDPOINT"], UriKind.Absolute, out var endpoint) ? endpoint : null,
             configuration["SPEECH_RECOGNITION_LANGUAGE"] ?? "ja-JP",
             sampleRate);
     }
