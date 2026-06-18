@@ -34,3 +34,4 @@
 - Speech SDK の C# `SpeechRecognizer` は Entra ID 認証で custom endpoint + `TokenCredential` を使う必要があるため、raw bearer token 方式から `SpeechConfig.FromEndpoint(..., TokenCredential)` に変更した。
 - API に `/api/speech/synthesize` を追加し、Azure Speech TTS を managed identity + AAD authorization token で呼び出して MP3 を返すようにした。
 - SPA は応答テキスト受信後に TTS endpoint を呼び出し、ブラウザで音声再生するようにした。
+- ブラウザの autoplay 制限に対応するため、マイク開始クリック時に再生用 Web Audio `AudioContext` を unlock し、TTS MP3 を Web Audio 経由で再生するようにした。

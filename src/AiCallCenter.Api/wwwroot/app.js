@@ -7,9 +7,11 @@ const finals = document.getElementById("finals");
 const responses = document.getElementById("responses");
 
 const targetSampleRate = 16000;
+const BrowserAudioContext = window.AudioContext || window.webkitAudioContext;
 let socket;
 let mediaStream;
 let audioContext;
+let playbackAudioContext;
 let processor;
 let source;
 let currentPlayback;
@@ -22,7 +24,9 @@ async function start() {
   startButton.disabled = true;
 
   try {
+    const playbackReady = unlockAudioPlayback();
     const conversation = await createConversation();
+    await playbackReady;
     conversationText.textContent = conversation.conversationId;
 
     mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -85,6 +89,16 @@ async function stop() {
   if (audioContext) {
     await audioContext.close();
     audioContext = null;
+  }
+
+  if (currentPlayback) {
+    currentPlayback.stop();
+    currentPlayback = null;
+  }
+
+  if (playbackAudioContext) {
+    await playbackAudioContext.close();
+    playbackAudioContext = null;
   }
 
   if (mediaStream) {
@@ -167,6 +181,20 @@ function setStatus(text) {
   statusText.textContent = text;
 }
 
+async function unlockAudioPlayback() {
+  if (!BrowserAudioContext) {
+    throw new Error("このブラウザは Web Audio API に対応していません。");
+  }
+
+  if (!playbackAudioContext || playbackAudioContext.state === "closed") {
+    playbackAudioContext = new BrowserAudioContext();
+  }
+
+  if (playbackAudioContext.state !== "running") {
+    await playbackAudioContext.resume();
+  }
+}
+
 async function playResponseAudio(text) {
   if (!text) {
     return;
@@ -184,19 +212,20 @@ async function playResponseAudio(text) {
       throw new Error(`TTSに失敗しました: ${response.status}`);
     }
 
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
+    await unlockAudioPlayback();
+    const audioBuffer = await playbackAudioContext.decodeAudioData(await response.arrayBuffer());
     if (currentPlayback) {
-      currentPlayback.pause();
-      URL.revokeObjectURL(currentPlayback.src);
+      currentPlayback.stop();
     }
 
-    currentPlayback = new Audio(url);
+    currentPlayback = playbackAudioContext.createBufferSource();
+    currentPlayback.buffer = audioBuffer;
+    currentPlayback.connect(playbackAudioContext.destination);
     currentPlayback.addEventListener("ended", () => {
-      URL.revokeObjectURL(url);
+      currentPlayback = null;
       setStatus("接続済み。マイクに話してください。");
     }, { once: true });
-    await currentPlayback.play();
+    currentPlayback.start();
     setStatus("応答音声を再生しています...");
   } catch (error) {
     setStatus(`音声再生に失敗しました: ${error.message}`);
