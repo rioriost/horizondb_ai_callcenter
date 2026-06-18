@@ -1,0 +1,21 @@
+name: ai-callcenter
+metadata:
+  template: ai-callcenter@0.1.0
+requiredVersions:
+  azd: ">= 1.25.0"
+infra:
+  provider: bicep
+  path: infra
+hooks:
+  postprovision:
+    shell: sh
+    run: ./infra/scripts/postprovision.sh
+    interactive: true
+    continueOnError: false
+services:
+  api:
+    project: ./src/AiCallCenter.Api
+    language: docker
+    host: containerapp
+    docker:
+      path: Dockerfile

@@ -11,16 +11,19 @@
 - `docs/implementation-plan-review.md` を保存し、プランレビュー PASS とした。
 - 実装前に `.gitignore` を作成した。
 
-## 次の作業
-
 - M1 commit を作成した。
 - .NET solution、API、LocalAdapter の基盤を作成した。
 - API に `/healthz`、会話作成、transcript POST、respond POST、`/ws/conversations/{id}` を追加した。
 - LocalAdapter に USB マイク Speech STT、API 送信、Speech TTS、`--text` smoke test mode を追加した。
 - API Dockerfile を追加した。
 - `dotnet build AiCallCenter.slnx --no-restore` が成功した。
-
-## 次の作業
-
-- HorizonDB schema と DB 初期化 SQL を作成する。
-- API の HorizonDB 連携 SQL と deploymentScript を `azd up` 経路に接続する。
+- M2 commit を作成した。
+- HorizonDB schema、seed SQL、Azure OpenAI model alias 登録、response master embedding 生成を `infra/scripts/postprovision.sh` に実装した。
+- ARM `deploymentScripts` は Storage Account の key-based authentication がテナントポリシーで拒否されたため、azd `postprovision` hook に移行した。
+- Azure OpenAI / Speech は local auth disabled のポリシーに合わせ、API と hook から Entra ID token で呼び出す構成にした。
+- HorizonDB の `azure_ai` managed identity 呼び出しはテナント不一致で失敗したため、BYOM alias は登録しつつ、embedding / rerank は API と hook から Azure OpenAI REST を呼び、HorizonDB には `vector(3072)` を保存する構成にした。
+- HorizonDB preview の immutable property 更新エラーを回避するため、既存クラスター再利用モードと postprovision hook での parameter group attach を追加した。
+- 現在の環境では既存 HorizonDB を安全に再利用するため、`infra/main.parameters.json` で `environmentName` と `useExistingHorizonDb` を固定している。
+- `azd up --no-prompt` が成功し、Container Apps API endpoint が発行された。
+- 公開 API の `/healthz` が 200 を返すことを確認した。
+- 公開 API で会話作成から `/api/conversations/{id}/respond` までの smoke test が成功し、HorizonDB vector search と Azure OpenAI rerank による応答候補が返ることを確認した。

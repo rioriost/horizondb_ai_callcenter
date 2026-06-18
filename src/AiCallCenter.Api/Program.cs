@@ -1,13 +1,17 @@
 using System.Buffers;
+using System.Net.Http.Headers;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using Azure.Core;
+using Azure.Identity;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton(AppDatabaseOptions.FromConfiguration(builder.Configuration));
-builder.Services.AddSingleton<ResponseSelectionOptions>(_ => ResponseSelectionOptions.FromConfiguration(builder.Configuration));
+builder.Services.AddSingleton<AiModelOptions>(_ => AiModelOptions.FromConfiguration(builder.Configuration));
+builder.Services.AddHttpClient<AzureOpenAiClient>();
 builder.Services.AddSingleton<ConversationRepository>();
 builder.Services.AddSingleton<ConversationService>();
 
@@ -135,7 +139,7 @@ static async Task SendJsonAsync(WebSocket socket, object value, CancellationToke
     await socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, cancellationToken);
 }
 
-sealed class ConversationService(ConversationRepository repository)
+sealed class ConversationService(ConversationRepository repository, AzureOpenAiClient aiClient)
 {
     public async Task<TranscriptAcceptedResponse> AcceptTranscriptAsync(
         Guid conversationId,
@@ -158,17 +162,23 @@ sealed class ConversationService(ConversationRepository repository)
             return new TranscriptAcceptedResponse(conversationId, request.SequenceNo, "streaming", null);
         }
 
-        var response = await repository.FinalizeTranscriptAndSelectResponseAsync(
-            conversationId,
-            request.SequenceNo,
-            request.Text,
-            cancellationToken);
+        var embedding = await aiClient.CreateEmbeddingAsync(request.Text, cancellationToken);
+        await repository.FinalizeTranscriptAsync(conversationId, request.SequenceNo, request.Text, embedding, cancellationToken);
+
+        var candidates = await repository.GetResponseCandidatesAsync(embedding, cancellationToken);
+        if (candidates.Count == 0)
+        {
+            throw new InvalidOperationException("No enabled response_master rows were found. Seed response data before using the call center API.");
+        }
+
+        var response = await aiClient.RerankAsync(request.Text, candidates, cancellationToken);
+        await repository.RecordResponseAsync(conversationId, request.SequenceNo, response, cancellationToken);
 
         return new TranscriptAcceptedResponse(conversationId, request.SequenceNo, "responded", response);
     }
 }
 
-sealed class ConversationRepository(AppDatabaseOptions databaseOptions, ResponseSelectionOptions selectionOptions)
+sealed class ConversationRepository(AppDatabaseOptions databaseOptions)
 {
     public async Task UpsertPartialTranscriptAsync(Guid conversationId, int sequenceNo, string text, CancellationToken cancellationToken)
     {
@@ -186,28 +196,15 @@ sealed class ConversationRepository(AppDatabaseOptions databaseOptions, Response
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<SelectedResponse> FinalizeTranscriptAndSelectResponseAsync(
+    public async Task FinalizeTranscriptAsync(
         Guid conversationId,
         int sequenceNo,
         string text,
+        float[] embedding,
         CancellationToken cancellationToken)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-
-        await UpsertFinalTranscriptAsync(connection, transaction, conversationId, sequenceNo, text, cancellationToken);
-
-        var response = await SelectResponseAsync(connection, transaction, conversationId, sequenceNo, text, cancellationToken);
-        if (response is null)
-        {
-            throw new InvalidOperationException("No enabled response_master rows were found. Seed response data before using the call center API.");
-        }
-
-        await InsertResponseEventAsync(connection, transaction, conversationId, sequenceNo, response, cancellationToken);
-        await MarkRespondedAsync(connection, transaction, conversationId, sequenceNo, cancellationToken);
-
-        await transaction.CommitAsync(cancellationToken);
-        return response;
+        await UpsertFinalTranscriptAsync(connection, null, conversationId, sequenceNo, text, embedding, cancellationToken);
     }
 
     async Task<NpgsqlConnection> OpenConnectionAsync(CancellationToken cancellationToken)
@@ -224,10 +221,11 @@ sealed class ConversationRepository(AppDatabaseOptions databaseOptions, Response
 
     async Task UpsertFinalTranscriptAsync(
         NpgsqlConnection connection,
-        NpgsqlTransaction transaction,
+        NpgsqlTransaction? transaction,
         Guid conversationId,
         int sequenceNo,
         string text,
+        float[] embedding,
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
@@ -239,7 +237,7 @@ sealed class ConversationRepository(AppDatabaseOptions databaseOptions, Response
                 @sequence_no,
                 @text,
                 @text,
-                azure_openai.create_embeddings(@embedding_model, @text)::vector,
+                @embedding::vector,
                 'finalized',
                 now()
             )
@@ -254,73 +252,48 @@ sealed class ConversationRepository(AppDatabaseOptions databaseOptions, Response
         command.Parameters.AddWithValue("conversation_id", conversationId);
         command.Parameters.AddWithValue("sequence_no", sequenceNo);
         command.Parameters.AddWithValue("text", text);
-        command.Parameters.AddWithValue("embedding_model", selectionOptions.EmbeddingModelAlias);
+        command.Parameters.AddWithValue("embedding", ToVectorLiteral(embedding));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    async Task<SelectedResponse?> SelectResponseAsync(
-        NpgsqlConnection connection,
-        NpgsqlTransaction transaction,
-        Guid conversationId,
-        int sequenceNo,
-        string text,
-        CancellationToken cancellationToken)
+    public async Task<List<ResponseCandidate>> GetResponseCandidatesAsync(float[] embedding, CancellationToken cancellationToken)
     {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
         command.CommandText = """
-            WITH query_segment AS (
-                SELECT embedding
-                FROM conversation_segments
-                WHERE conversation_id = @conversation_id AND sequence_no = @sequence_no
-            ),
-            candidates AS (
-                SELECT
-                    rm.id,
-                    rm.response_text,
-                    (rm.embedding <=> qs.embedding)::double precision AS distance
-                FROM response_master rm
-                CROSS JOIN query_segment qs
-                WHERE rm.enabled = true
-                ORDER BY rm.embedding <=> qs.embedding
-                LIMIT @candidate_limit
-            ),
-            reranked AS (
-                SELECT document_id, rank, relevance_score
-                FROM azure_ai.rank(
-                    @query,
-                    ARRAY(SELECT response_text FROM candidates),
-                    ARRAY(SELECT id::text FROM candidates),
-                    @reranker_model
-                )
-            )
             SELECT
-                c.id,
-                c.response_text,
-                c.distance,
-                r.relevance_score::double precision
-            FROM candidates c
-            JOIN reranked r ON r.document_id = c.id::text
-            ORDER BY r.rank ASC
-            LIMIT 1;
+                id,
+                response_text,
+                (embedding <=> @embedding::vector)::double precision AS distance
+            FROM response_master
+            WHERE enabled = true AND embedding IS NOT NULL
+            ORDER BY embedding <=> @embedding::vector
+            LIMIT @candidate_limit;
             """;
-        command.Parameters.AddWithValue("conversation_id", conversationId);
-        command.Parameters.AddWithValue("sequence_no", sequenceNo);
-        command.Parameters.AddWithValue("candidate_limit", selectionOptions.CandidateLimit);
-        command.Parameters.AddWithValue("query", text);
-        command.Parameters.AddWithValue("reranker_model", selectionOptions.RerankerModelAlias);
+        command.Parameters.AddWithValue("embedding", ToVectorLiteral(embedding));
+        command.Parameters.AddWithValue("candidate_limit", 20);
 
+        var candidates = new List<ResponseCandidate>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
+        while (await reader.ReadAsync(cancellationToken))
         {
-            return null;
+            candidates.Add(new ResponseCandidate(reader.GetGuid(0), reader.GetString(1), reader.GetDouble(2)));
         }
 
-        return new SelectedResponse(
-            reader.GetGuid(0),
-            reader.GetString(1),
-            reader.GetDouble(2),
-            reader.GetDouble(3));
+        return candidates;
+    }
+
+    public async Task RecordResponseAsync(
+        Guid conversationId,
+        int sequenceNo,
+        SelectedResponse response,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await InsertResponseEventAsync(connection, transaction, conversationId, sequenceNo, response, cancellationToken);
+        await MarkRespondedAsync(connection, transaction, conversationId, sequenceNo, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     static async Task InsertResponseEventAsync(
@@ -378,6 +351,11 @@ sealed class ConversationRepository(AppDatabaseOptions databaseOptions, Response
         command.Parameters.AddWithValue("sequence_no", sequenceNo);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
+
+    static string ToVectorLiteral(float[] embedding)
+    {
+        return "[" + string.Join(",", embedding.Select(static value => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture))) + "]";
+    }
 }
 
 sealed record AppDatabaseOptions(string? ConnectionString, string? ConfigurationError)
@@ -423,14 +401,112 @@ sealed record AppDatabaseOptions(string? ConnectionString, string? Configuration
     }
 }
 
-sealed record ResponseSelectionOptions(string EmbeddingModelAlias, string RerankerModelAlias, int CandidateLimit)
+sealed class AzureOpenAiClient(HttpClient httpClient, AiModelOptions options)
 {
-    public static ResponseSelectionOptions FromConfiguration(IConfiguration configuration)
+    readonly TokenCredential credential = new DefaultAzureCredential();
+
+    public async Task<float[]> CreateEmbeddingAsync(string text, CancellationToken cancellationToken)
     {
-        return new ResponseSelectionOptions(
-            configuration["AI_EMBEDDING_MODEL_ALIAS"] ?? "app-embedding",
-            configuration["AI_RERANKER_MODEL_ALIAS"] ?? "app-reranker",
-            int.TryParse(configuration["RESPONSE_CANDIDATE_LIMIT"], out var limit) ? Math.Clamp(limit, 1, 100) : 20);
+        options.EnsureConfigured();
+        using var request = await CreateRequestAsync(
+            HttpMethod.Post,
+            $"openai/deployments/{Uri.EscapeDataString(options.EmbeddingDeployment)}/embeddings?api-version={Uri.EscapeDataString(options.ApiVersion)}",
+            new { input = text },
+            cancellationToken);
+
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Azure OpenAI embedding request failed: {(int)response.StatusCode} {body}");
+        }
+
+        using var document = JsonDocument.Parse(body);
+        return document.RootElement.GetProperty("data")[0].GetProperty("embedding")
+            .EnumerateArray()
+            .Select(static item => item.GetSingle())
+            .ToArray();
+    }
+
+    public async Task<SelectedResponse> RerankAsync(string query, IReadOnlyList<ResponseCandidate> candidates, CancellationToken cancellationToken)
+    {
+        options.EnsureConfigured();
+        var candidateText = string.Join("\n", candidates.Select((candidate, index) =>
+            $"{index + 1}. id={candidate.ResponseId} distance={candidate.Distance:R} text={candidate.ResponseText}"));
+
+        var prompt = $"""
+            Select the best response for the Japanese call-center customer utterance.
+            Return only the response id UUID. Do not return explanations.
+
+            Customer utterance:
+            {query}
+
+            Candidate responses:
+            {candidateText}
+            """;
+
+        using var request = await CreateRequestAsync(
+            HttpMethod.Post,
+            $"openai/deployments/{Uri.EscapeDataString(options.ChatDeployment)}/chat/completions?api-version={Uri.EscapeDataString(options.ApiVersion)}",
+            new
+            {
+                messages = new object[]
+                {
+                    new { role = "system", content = "You are a precise reranker for call-center response candidates." },
+                    new { role = "user", content = prompt }
+                },
+                max_tokens = 64
+            },
+            cancellationToken);
+
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Azure OpenAI rerank request failed: {(int)response.StatusCode} {body}");
+        }
+
+        using var document = JsonDocument.Parse(body);
+        var content = document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "";
+        var selected = candidates.FirstOrDefault(candidate => content.Contains(candidate.ResponseId.ToString(), StringComparison.OrdinalIgnoreCase))
+            ?? candidates[0];
+
+        return new SelectedResponse(selected.ResponseId, selected.ResponseText, selected.Distance, 1.0);
+    }
+
+    async Task<HttpRequestMessage> CreateRequestAsync(HttpMethod method, string relativePath, object payload, CancellationToken cancellationToken)
+    {
+        var token = await credential.GetTokenAsync(
+            new TokenRequestContext(["https://cognitiveservices.azure.com/.default"]),
+            cancellationToken);
+
+        var request = new HttpRequestMessage(method, new Uri(options.Endpoint, relativePath));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+        request.Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions.Default), Encoding.UTF8, "application/json");
+        return request;
+    }
+}
+
+sealed record AiModelOptions(Uri Endpoint, string ApiVersion, string EmbeddingDeployment, string ChatDeployment)
+{
+    public void EnsureConfigured()
+    {
+        if (Endpoint == EmptyEndpoint)
+        {
+            throw new InvalidOperationException("AZURE_OPENAI_ENDPOINT is required.");
+        }
+    }
+
+    static readonly Uri EmptyEndpoint = new("https://localhost/");
+
+    public static AiModelOptions FromConfiguration(IConfiguration configuration)
+    {
+        var endpointText = configuration["AZURE_OPENAI_ENDPOINT"];
+        return new AiModelOptions(
+            Uri.TryCreate(endpointText, UriKind.Absolute, out var endpoint) ? endpoint : EmptyEndpoint,
+            configuration["AZURE_OPENAI_API_VERSION"] ?? "2024-10-21",
+            configuration["AZURE_OPENAI_EMBED_DEPLOYMENT"] ?? "app-embedding",
+            configuration["AZURE_OPENAI_CHAT_DEPLOYMENT"] ?? "app-reranker");
     }
 }
 
@@ -445,4 +521,5 @@ sealed record TranscriptChunkRequest(int SequenceNo, string Text, bool IsFinal);
 sealed record RespondRequest(int SequenceNo, string Text);
 sealed record TranscriptAcceptedResponse(Guid ConversationId, int SequenceNo, string Status, SelectedResponse? Response);
 sealed record SelectedResponse(Guid ResponseId, string ResponseText, double Distance, double RerankScore);
+sealed record ResponseCandidate(Guid ResponseId, string ResponseText, double Distance);
 sealed record ErrorResponse(string Code, string Message);
