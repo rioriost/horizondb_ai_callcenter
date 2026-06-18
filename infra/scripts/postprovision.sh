@@ -128,6 +128,11 @@ psql -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1 -f ./infra/scripts/seed.sql
 echo "Generating response master embeddings"
 OPENAI_TOKEN=$(az account get-access-token --resource https://cognitiveservices.azure.com/ --query accessToken -o tsv)
 export OPENAI_TOKEN
+RESPONSE_MASTER_ROWS=/tmp/response-master-rows.tsv
+export RESPONSE_MASTER_ROWS
+psql -d "$POSTGRES_DATABASE" -t -A -F "$(printf '\t')" -c \
+  "SELECT id::text, response_text FROM response_master WHERE enabled = true AND embedding IS NULL ORDER BY id;" \
+  > "$RESPONSE_MASTER_ROWS"
 python3 - <<'PY' > /tmp/response-master-embeddings.sql
 import json
 import os
@@ -137,19 +142,22 @@ endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
 deployment = os.environ["AZURE_OPENAI_EMBED_DEPLOYMENT"]
 api_version = os.environ["AZURE_OPENAI_API_VERSION"]
 token = os.environ["OPENAI_TOKEN"]
+rows_path = os.environ["RESPONSE_MASTER_ROWS"]
 
-responses = [
-    ("00000000-0000-0000-0000-000000000001", "お問い合わせありがとうございます。ご本人確認のため、お名前とご登録のお電話番号を教えてください。"),
-    ("00000000-0000-0000-0000-000000000002", "ご不便をおかけして申し訳ありません。状況を確認しますので、発生している問題をもう少し詳しく教えてください。"),
-    ("00000000-0000-0000-0000-000000000003", "料金や請求内容について確認します。対象の請求月または請求番号が分かれば教えてください。"),
-    ("00000000-0000-0000-0000-000000000004", "契約内容の変更をご希望ですね。現在の契約内容を確認したうえで、変更可能な選択肢をご案内します。"),
-    ("00000000-0000-0000-0000-000000000005", "解約についてのご相談ですね。手続き前に注意事項と代替プランをご案内します。"),
-    ("00000000-0000-0000-0000-000000000006", "担当者への引き継ぎが必要な内容です。会話内容を記録したうえで、オペレーターにおつなぎします。"),
-]
+responses = []
+with open(rows_path, encoding="utf-8") as rows:
+    for line in rows:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        response_id, text = line.split("\t", 1)
+        responses.append((response_id, text))
 
 url = f"{endpoint}/openai/deployments/{deployment}/embeddings?api-version={api_version}"
-for response_id, text in responses:
-    payload = json.dumps({"input": text}).encode("utf-8")
+batch_size = 16
+for start in range(0, len(responses), batch_size):
+    batch = responses[start:start + batch_size]
+    payload = json.dumps({"input": [text for _, text in batch]}).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=payload,
@@ -161,10 +169,16 @@ for response_id, text in responses:
     )
     with urllib.request.urlopen(request, timeout=60) as response:
         body = json.loads(response.read().decode("utf-8"))
-    vector = "[" + ",".join(str(value) for value in body["data"][0]["embedding"]) + "]"
-    print(f"UPDATE response_master SET embedding = '{vector}'::vector, updated_at = now() WHERE id = '{response_id}'::uuid;")
+    vectors = sorted(body["data"], key=lambda item: item["index"])
+    for (response_id, _), item in zip(batch, vectors):
+        vector = "[" + ",".join(str(value) for value in item["embedding"]) + "]"
+        print(f"UPDATE response_master SET embedding = '{vector}'::vector, updated_at = now() WHERE id = '{response_id}'::uuid;")
 PY
-psql -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1 -f /tmp/response-master-embeddings.sql
+if [ -s /tmp/response-master-embeddings.sql ]; then
+  psql -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1 -f /tmp/response-master-embeddings.sql
+else
+  echo "No response master embeddings needed"
+fi
 
 echo "Verifying model aliases"
 psql -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1 -c "SELECT * FROM model_registry.model_list_all();"

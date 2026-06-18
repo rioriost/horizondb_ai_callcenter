@@ -35,3 +35,7 @@
 - API に `/api/speech/synthesize` を追加し、Azure Speech TTS を managed identity + AAD authorization token で呼び出して MP3 を返すようにした。
 - SPA は応答テキスト受信後に TTS endpoint を呼び出し、ブラウザで音声再生するようにした。
 - ブラウザの autoplay 制限に対応するため、マイク開始クリック時に再生用 Web Audio `AudioContext` を unlock し、TTS MP3 を Web Audio 経由で再生するようにした。
+- 小中高生向け教育サービスの公開 FAQ に多い論点を参考にし、文面はコピーせず独自作成した想定応答 200 件を `infra/scripts/seed.sql` に追加した。
+- `postprovision.sh` の embedding 生成を hardcoded 6 件から `response_master` の未ベクトル化行を読むバッチ処理に変更した。
+- `azd hooks run postprovision` により HorizonDB へ有効応答 200 件を投入し、全件 `text-embedding-3-large` でベクトル化した。旧汎用 seed 6 件は disabled にした。
+- 公開 API で「ログインできない」「教材が届かない」の代表問い合わせが新 seed から応答されることを確認した。
