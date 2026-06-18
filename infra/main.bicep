@@ -140,6 +140,16 @@ resource apiOpenAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+resource apiSpeechUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(speech.id, apiIdentity.id, 'speech-user')
+  scope: speech
+  properties: {
+    principalType: 'ServicePrincipal'
+    principalId: apiIdentity.properties.principalId
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f2dc8367-1007-4938-bd23-fe263f013447')
+  }
+}
+
 resource containerEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: containerEnvironmentName
   location: location
@@ -411,6 +421,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
   }
   dependsOn: [
     apiKeyVaultSecretsUser
+    apiSpeechUser
     acrPull
   ]
 }

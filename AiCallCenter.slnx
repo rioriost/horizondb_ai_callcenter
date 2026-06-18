@@ -1,6 +1,5 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/AiCallCenter.Api/AiCallCenter.Api.csproj" />
-    <Project Path="src/AiCallCenter.LocalAdapter/AiCallCenter.LocalAdapter.csproj" />
   </Folder>
 </Solution>

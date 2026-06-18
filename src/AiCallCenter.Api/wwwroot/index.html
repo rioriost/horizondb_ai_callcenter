@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Callcenter PoC</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <p class="eyebrow">Azure Speech + HorizonDB</p>
+      <h1>AI Callcenter PoC</h1>
+      <p>ブラウザのマイク音声を Container Apps API に送り、API 側の managed identity で Azure Speech to Text にストリーミングします。</p>
+    </section>
+
+    <section class="panel">
+      <div class="actions">
+        <button id="startButton">マイクを開始</button>
+        <button id="stopButton" disabled>停止</button>
+      </div>
+      <dl class="status-grid">
+        <div>
+          <dt>状態</dt>
+          <dd id="status">未接続</dd>
+        </div>
+        <div>
+          <dt>Conversation</dt>
+          <dd id="conversationId">-</dd>
+        </div>
+      </dl>
+      <p class="hint">Chrome / Edge など、HTTPS 上の getUserMedia が使えるブラウザで開いてください。</p>
+    </section>
+
+    <section class="panel">
+      <h2>認識中</h2>
+      <div id="partial" class="transcript muted">マイク開始後に話してください。</div>
+    </section>
+
+    <section class="panel">
+      <h2>発話履歴</h2>
+      <ol id="finals" class="history"></ol>
+    </section>
+
+    <section class="panel">
+      <h2>API レスポンス</h2>
+      <ol id="responses" class="history"></ol>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -27,3 +27,7 @@
 - `azd up --no-prompt` が成功し、Container Apps API endpoint が発行された。
 - 公開 API の `/healthz` が 200 を返すことを確認した。
 - 公開 API で会話作成から `/api/conversations/{id}/respond` までの smoke test が成功し、HorizonDB vector search と Azure OpenAI rerank による応答候補が返ることを確認した。
+- Microsoft 組織ポリシー下で Speech local auth/key を使わない方針に変更した。
+- LocalAdapter project を削除し、Container Apps 配信 SPA と `/ws/audio/conversations/{id}` を追加した。
+- ブラウザは `getUserMedia()` で取得した音声を 16 kHz PCM chunk として API に送り、API が managed identity で Azure Speech STT に接続する構成に変更した。
+- API managed identity に `Cognitive Services Speech User` role を付与する Bicep を追加した。

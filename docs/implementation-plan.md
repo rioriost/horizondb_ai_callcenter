@@ -4,14 +4,14 @@
 
 - 設計レビューは PASS 済み。
 - ローカル環境には .NET SDK 10、Azure Developer CLI、Azure CLI、Docker がある。
-- `azd up` の必須経路は USB マイク PoC + Container Apps API + HorizonDB + Azure AI Speech/OpenAI とする。
+- `azd up` の必須経路は Container Apps 配信 SPA + API 側 Azure Speech STT + HorizonDB + Azure OpenAI とする。
 - 電話番号取得など規制・契約に依存する作業は将来の ACS ingress として分離し、今回の自動化必須経路には含めない。
 
 ## 実装方針
 
 1. `.gitignore` と進捗管理ドキュメントを先に整備する。
 2. .NET solution を作成する。
-3. API は ASP.NET Core Minimal API、ローカルアダプターは C# console app とする。
+3. API は ASP.NET Core Minimal API とし、同じ Container Apps から SPA を静的配信する。
 4. DB 初期化 SQL は `infra/scripts/schema.sql` と `infra/scripts/seed.sql` に分け、deploymentScript から再実行可能にする。
 5. Azure リソースは Bicep module に分割し、`azure.yaml` から `azd up` で provision/deploy できる形にする。
 6. まとまった単位で git commit する。
@@ -26,8 +26,7 @@
 | `infra/modules/*.bicep` | HorizonDB、Container Apps、AI Services、Key Vault、ACR 等の module。 |
 | `infra/scripts/schema.sql` | HorizonDB schema/extensions/functions。 |
 | `infra/scripts/seed.sql` | 初期想定応答マスター。 |
-| `src/AiCallCenter.Api` | 会話 API、HorizonDB repository、応答選択 service。 |
-| `src/AiCallCenter.LocalAdapter` | USB マイク -> Speech STT -> API -> Speech TTS のローカル PoC。 |
+| `src/AiCallCenter.Api` | SPA、会話 API、音声 WebSocket、Azure Speech STT bridge、HorizonDB repository、応答選択 service。 |
 | `docs/progress.md` | 実装進捗と検証結果。 |
 
 ## マイルストーン
@@ -40,9 +39,9 @@
 
 ### M2: .NET アプリ基盤
 
-- solution、API project、LocalAdapter project を作成する。
+- solution と API project を作成する。
 - API に `/healthz`、会話作成、transcript 受信、応答要求の endpoint を追加する。
-- ストリーム用に `/ws/conversations/{id}` を追加し、PoC では HTTP transcript chunk と WebSocket transcript chunk の両方を同じ service に流す。
+- ストリーム用に `/ws/conversations/{id}` と `/ws/audio/conversations/{id}` を追加し、PoC では HTTP transcript chunk、WebSocket transcript chunk、ブラウザ PCM 音声のすべてを同じ service に流す。
 - Dockerfile を追加し、ローカル build を通す。
 - commit: アプリ基盤。
 
@@ -54,12 +53,13 @@
 - `azure_openai.create_embeddings('app-embedding', ...)` と `azure_ai.rank(..., 'app-reranker')` を使う SQL を実装する。
 - commit: HorizonDB 連携。
 
-### M4: ローカル USB マイクアダプター
+### M4: ブラウザ音声入力 SPA
 
-- Speech SDK でマイク音声を STT し、確定発話を API に送る。
-- API から返る応答テキストを Speech SDK TTS で再生する。
+- SPA で `getUserMedia()` によりマイク音声を取得し、16 kHz PCM chunk として API WebSocket に送る。
+- API は managed identity で Azure Speech STT に接続し、認識結果を既存 transcript flow に送る。
+- API から返る応答テキストを SPA に表示する。
 - 設定不足は明示エラーにする。
-- commit: ローカル音声アダプター。
+- commit: ブラウザ音声入力。
 
 ### M5: Azure インフラ
 
@@ -68,6 +68,7 @@
 - HorizonDB parameter group で `vector,azure_ai` を許可する。
 - deploymentScript で firewall rule、DB 作成、extension 作成、BYOM モデル登録、schema/seed 適用を行う。
 - Azure OpenAI は `text-embedding-3-large` と reranker 対応モデルを deployment として作成し、Speech は Azure AI Speech resource として作成する。
+- API の managed identity に Azure OpenAI User と Azure AI Speech User を付与する。
 - Key Vault と Container Apps secret/reference を設定する。
 - commit: azd インフラ。
 
@@ -86,7 +87,7 @@
 - setup script は再実行可能で、失敗時に非 0 終了する。
 - `azure_ai` の BYOM 登録が `azd up` 経路に含まれている。
 - API は DB/AI/Speech の設定不足を明示エラーにする。
-- LocalAdapter は macOS arm64 の USB マイクで動く構成にする。
+- SPA はブラウザに credential を保持せず、Azure Speech への認証は API 側 managed identity に集約する。
 
 ## 進捗管理
 
