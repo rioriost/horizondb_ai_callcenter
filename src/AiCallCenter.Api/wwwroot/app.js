@@ -12,6 +12,7 @@ let mediaStream;
 let audioContext;
 let processor;
 let source;
+let currentPlayback;
 
 startButton.addEventListener("click", start);
 stopButton.addEventListener("click", stop);
@@ -144,6 +145,7 @@ function handleSocketMessage(event) {
       break;
     case "response":
       addItem(responses, message.text);
+      playResponseAudio(message.text);
       break;
     case "error":
       setStatus(`エラー: ${message.code || "unknown"} ${message.message || ""}`);
@@ -163,6 +165,42 @@ function addItem(list, text) {
 
 function setStatus(text) {
   statusText.textContent = text;
+}
+
+async function playResponseAudio(text) {
+  if (!text) {
+    return;
+  }
+
+  try {
+    setStatus("応答音声を生成しています...");
+    const response = await fetch("/api/speech/synthesize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+
+    if (!response.ok) {
+      throw new Error(`TTSに失敗しました: ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    if (currentPlayback) {
+      currentPlayback.pause();
+      URL.revokeObjectURL(currentPlayback.src);
+    }
+
+    currentPlayback = new Audio(url);
+    currentPlayback.addEventListener("ended", () => {
+      URL.revokeObjectURL(url);
+      setStatus("接続済み。マイクに話してください。");
+    }, { once: true });
+    await currentPlayback.play();
+    setStatus("応答音声を再生しています...");
+  } catch (error) {
+    setStatus(`音声再生に失敗しました: ${error.message}`);
+  }
 }
 
 function downsampleToPcm16(input, inputSampleRate, outputSampleRate) {

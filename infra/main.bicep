@@ -405,6 +405,8 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'AZURE_CLIENT_ID', value: apiIdentity.properties.clientId }
             { name: 'SPEECH_REGION', value: location }
             { name: 'SPEECH_ENDPOINT', value: speechEndpoint }
+            { name: 'SPEECH_RESOURCE_ID', value: speech.id }
+            { name: 'SPEECH_VOICE_NAME', value: 'ja-JP-NanamiNeural' }
           ]
           probes: [
             {
@@ -456,5 +458,6 @@ output AZURE_OPENAI_CHAT_DEPLOYMENT string = chatDeploymentName
 output AZURE_OPENAI_CHAT_MODEL string = chatModelName
 output SPEECH_REGION string = location
 output SPEECH_ENDPOINT string = speechEndpoint
+output SPEECH_RESOURCE_ID string = speech.id
 output SERVICE_API_NAME string = apiApp.name
 output SERVICE_API_URI string = 'https://${apiApp.properties.configuration.ingress.fqdn}'

@@ -4,7 +4,7 @@
 
 - 設計レビューは PASS 済み。
 - ローカル環境には .NET SDK 10、Azure Developer CLI、Azure CLI、Docker がある。
-- `azd up` の必須経路は Container Apps 配信 SPA + API 側 Azure Speech STT + HorizonDB + Azure OpenAI とする。
+- `azd up` の必須経路は Container Apps 配信 SPA + API 側 Azure Speech STT/TTS + HorizonDB + Azure OpenAI とする。
 - 電話番号取得など規制・契約に依存する作業は将来の ACS ingress として分離し、今回の自動化必須経路には含めない。
 
 ## 実装方針
@@ -26,7 +26,7 @@
 | `infra/modules/*.bicep` | HorizonDB、Container Apps、AI Services、Key Vault、ACR 等の module。 |
 | `infra/scripts/schema.sql` | HorizonDB schema/extensions/functions。 |
 | `infra/scripts/seed.sql` | 初期想定応答マスター。 |
-| `src/AiCallCenter.Api` | SPA、会話 API、音声 WebSocket、Azure Speech STT bridge、HorizonDB repository、応答選択 service。 |
+| `src/AiCallCenter.Api` | SPA、会話 API、音声 WebSocket、Azure Speech STT/TTS bridge、HorizonDB repository、応答選択 service。 |
 | `docs/progress.md` | 実装進捗と検証結果。 |
 
 ## マイルストーン
@@ -57,7 +57,7 @@
 
 - SPA で `getUserMedia()` によりマイク音声を取得し、16 kHz PCM chunk として API WebSocket に送る。
 - API は managed identity で Azure Speech STT に接続し、認識結果を既存 transcript flow に送る。
-- API から返る応答テキストを SPA に表示する。
+- API から返る応答テキストを SPA に表示し、`/api/speech/synthesize` 経由で Azure Speech TTS 音声を再生する。
 - 設定不足は明示エラーにする。
 - commit: ブラウザ音声入力。
 

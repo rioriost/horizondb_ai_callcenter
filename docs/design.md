@@ -40,7 +40,7 @@ Azure HorizonDB
   - rerank with azure_ai.rank
         |
         v
-Container Apps API -> response text -> browser UI / future Azure AI Speech TTS
+Container Apps API -> Azure AI Speech TTS -> browser playback
 ```
 
 ### Azure リソース
@@ -124,7 +124,9 @@ API は音声処理の入口を抽象化する。ブラウザ SPA と将来の A
 4. `response_master` を `ORDER BY embedding <=> query_embedding LIMIT 20` で候補取得する。
 5. 候補が複数ある場合は `azure_ai.rank(final_text, response_text[], id[], 'app-reranker')` で再ランクし、返却される `document_id`, `rank`, `relevance_score` を `response_events` の `selected_response_id`, `rerank_score` に対応付ける。
 6. 最上位応答を `response_events` に記録する。
-7. API が response text を返し、SPA が画面に表示する。TTS は将来 API 側 Azure Speech TTS として追加する。
+7. API が response text を返し、SPA が画面に表示する。
+8. SPA が `/api/speech/synthesize` に response text を送り、API 側が managed identity で Azure Speech TTS を呼び出して MP3 を返す。
+9. SPA が返却された MP3 をブラウザで再生する。
 
 ## `azd up` の自動化範囲
 

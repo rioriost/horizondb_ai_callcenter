@@ -56,6 +56,21 @@ app.MapPost("/api/conversations/{conversationId:guid}/respond", async (
     return Results.Ok(result);
 });
 
+app.MapPost("/api/speech/synthesize", async (
+    SpeechSynthesisRequest request,
+    SpeechTranscriptionOptions speechOptions,
+    AzureSpeechCredentialProvider speechCredentialProvider,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Text))
+    {
+        throw new BadHttpRequestException("Synthesis text is required.");
+    }
+
+    var audio = await SynthesizeSpeechAsync(request.Text, speechOptions, speechCredentialProvider, cancellationToken);
+    return Results.File(audio, "audio/mpeg");
+});
+
 app.Map("/ws/conversations/{conversationId:guid}", async (
     Guid conversationId,
     HttpContext context,
@@ -164,6 +179,30 @@ static async Task SendJsonAsync(WebSocket socket, object value, CancellationToke
     var payload = JsonSerializer.Serialize(value, JsonOptions.Default);
     var bytes = Encoding.UTF8.GetBytes(payload);
     await socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, cancellationToken);
+}
+
+static async Task<byte[]> SynthesizeSpeechAsync(
+    string text,
+    SpeechTranscriptionOptions speechOptions,
+    AzureSpeechCredentialProvider speechCredentialProvider,
+    CancellationToken cancellationToken)
+{
+    speechOptions.EnsureSynthesisConfigured();
+    var aadToken = await speechCredentialProvider.GetAccessTokenAsync(cancellationToken);
+    var authorizationToken = $"aad#{speechOptions.ResourceId}#{aadToken.Token}";
+    var speechConfig = SpeechConfig.FromAuthorizationToken(authorizationToken, speechOptions.Region);
+    speechConfig.SpeechSynthesisVoiceName = speechOptions.VoiceName;
+    speechConfig.SetSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3);
+
+    using var synthesizer = new SpeechSynthesizer(speechConfig, audioConfig: null);
+    var result = await synthesizer.SpeakTextAsync(text);
+    if (result.Reason != ResultReason.SynthesizingAudioCompleted)
+    {
+        var cancellation = SpeechSynthesisCancellationDetails.FromResult(result);
+        throw new InvalidOperationException($"Speech synthesis failed: {result.Reason}. {cancellation.ErrorDetails}");
+    }
+
+    return result.AudioData;
 }
 
 static async Task RunAudioTranscriptionSessionAsync(
@@ -740,6 +779,13 @@ sealed class AzureSpeechCredentialProvider(TokenCredential credential)
 {
     public TokenCredential Credential { get; } = credential;
 
+    public async Task<AccessToken> GetAccessTokenAsync(CancellationToken cancellationToken)
+    {
+        return await Credential.GetTokenAsync(
+            new TokenRequestContext(["https://cognitiveservices.azure.com/.default"]),
+            cancellationToken);
+    }
+
     public static AzureSpeechCredentialProvider FromConfiguration(IConfiguration configuration)
     {
         var clientId = configuration["AZURE_CLIENT_ID"];
@@ -749,13 +795,26 @@ sealed class AzureSpeechCredentialProvider(TokenCredential credential)
     }
 }
 
-sealed record SpeechTranscriptionOptions(Uri? Endpoint, string Language, int SampleRate)
+sealed record SpeechTranscriptionOptions(Uri? Endpoint, string? Region, string? ResourceId, string Language, string VoiceName, int SampleRate)
 {
     public void EnsureConfigured()
     {
         if (Endpoint is null)
         {
             throw new InvalidOperationException("SPEECH_ENDPOINT is required for browser audio transcription.");
+        }
+    }
+
+    public void EnsureSynthesisConfigured()
+    {
+        if (string.IsNullOrWhiteSpace(Region))
+        {
+            throw new InvalidOperationException("SPEECH_REGION is required for browser speech synthesis.");
+        }
+
+        if (string.IsNullOrWhiteSpace(ResourceId))
+        {
+            throw new InvalidOperationException("SPEECH_RESOURCE_ID is required for browser speech synthesis.");
         }
     }
 
@@ -767,7 +826,10 @@ sealed record SpeechTranscriptionOptions(Uri? Endpoint, string Language, int Sam
 
         return new SpeechTranscriptionOptions(
             Uri.TryCreate(configuration["SPEECH_ENDPOINT"], UriKind.Absolute, out var endpoint) ? endpoint : null,
+            configuration["SPEECH_REGION"],
+            configuration["SPEECH_RESOURCE_ID"],
             configuration["SPEECH_RECOGNITION_LANGUAGE"] ?? "ja-JP",
+            configuration["SPEECH_VOICE_NAME"] ?? "ja-JP-NanamiNeural",
             sampleRate);
     }
 }
@@ -781,6 +843,7 @@ sealed record HealthResponse(string Status, DateTimeOffset Timestamp);
 sealed record ConversationCreatedResponse(Guid ConversationId);
 sealed record TranscriptChunkRequest(int SequenceNo, string Text, bool IsFinal);
 sealed record RespondRequest(int SequenceNo, string Text);
+sealed record SpeechSynthesisRequest(string Text);
 sealed record TranscriptAcceptedResponse(Guid ConversationId, int SequenceNo, string Status, SelectedResponse? Response);
 sealed record SelectedResponse(Guid ResponseId, string ResponseText, double Distance, double RerankScore);
 sealed record ResponseCandidate(Guid ResponseId, string ResponseText, double Distance);
